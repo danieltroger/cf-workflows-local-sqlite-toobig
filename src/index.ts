@@ -11,8 +11,8 @@ interface Params {
   count: number;
   /** How many step.do calls to keep in flight concurrently (default 1 = sequential). */
   concurrency?: number;
-  /** What kind of value each step returns: "string" (default) or "bytes" (Uint8Array). */
-  valueType?: "string" | "bytes";
+  /** What kind of value each step returns: "string" (default), "bytes" (Uint8Array), or "arraybuffer". */
+  valueType?: "string" | "bytes" | "arraybuffer";
 }
 
 /**
@@ -53,12 +53,12 @@ function makePayloadBytes(bytes: number): Uint8Array {
  *
  * The bug (local `wrangler dev` only): a step that returns a **Uint8Array**
  * of only ~200 KB aborts the run with `string or blob too big: SQLITE_TOOBIG`,
- * while a step returning a **2 MB string** succeeds. The binary path behaves as
- * if its stored form is many times larger than its byteLength. Two oddities:
- *   - it surfaces as a raw SQLITE_TOOBIG, not the friendly
- *     "Step output is too large. Maximum allowed size is 1MiB." guard, and
- *   - the guard's size check disagrees with what actually gets stored.
- * The same workflows run fine in production Workflows.
+ * while the SAME bytes returned as a raw **ArrayBuffer** (up to ~2 MB) — or a
+ * **2 MB string** — succeed. So it is specific to the Uint8Array (typed-array
+ * view) path, which serializes as if far larger than its byteLength. It also
+ * surfaces as a raw SQLITE_TOOBIG, never the friendly
+ * "Step output is too large. Maximum allowed size is 1MiB." guard that an
+ * oversized string/ArrayBuffer gets. The same workflows run fine in production.
  */
 export class StepOutputWorkflow extends WorkflowEntrypoint<Env, Params> {
   async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
@@ -73,12 +73,15 @@ export class StepOutputWorkflow extends WorkflowEntrypoint<Env, Params> {
     let persisted = 0;
     const runOne = async () => {
       for (let i = next++; i < count; i = next++) {
-        const value = await step.do(`step-${i}`, async () =>
-          valueType === "bytes" ? makePayloadBytes(sizeBytes) : makePayload(sizeBytes)
-        );
+        await step.do(`step-${i}`, async () => {
+          if (valueType === "arraybuffer") return makePayloadBytes(sizeBytes).buffer as ArrayBuffer;
+          if (valueType === "bytes") return makePayloadBytes(sizeBytes);
+          return makePayload(sizeBytes);
+        });
         persisted++;
-        const len = value instanceof Uint8Array ? value.byteLength : value.length;
-        console.log(`[repro] OK step ${i}: value=${len}B (${valueType}, persisted=${persisted})`);
+        console.log(
+          `[repro] OK step ${i}: value=${sizeBytes}B (${valueType}, persisted=${persisted})`
+        );
       }
     };
     await Promise.all(Array.from({ length: concurrency }, runOne));
@@ -96,7 +99,8 @@ export default {
       const sizeBytes = Number(url.searchParams.get("size") ?? "262144"); // 256 KiB
       const count = Number(url.searchParams.get("count") ?? "1");
       const concurrency = Number(url.searchParams.get("concurrency") ?? "1");
-      const valueType = url.searchParams.get("valueType") === "string" ? "string" : "bytes";
+      const vt = url.searchParams.get("valueType");
+      const valueType = vt === "string" || vt === "arraybuffer" ? vt : "bytes";
       const instance = await env.STEP_OUTPUT_WORKFLOW.create({
         params: { sizeBytes, count, concurrency, valueType },
       });
@@ -114,20 +118,21 @@ export default {
       [
         "Cloudflare Workflows — local `wrangler dev` SQLITE_TOOBIG repro",
         "",
-        "  GET /start?valueType=<bytes|string>&size=<bytes>&count=<n>&concurrency=<n>",
+        "  GET /start?valueType=<bytes|arraybuffer|string>&size=<bytes>&count=<n>&concurrency=<n>",
         "  GET /status?id=<id>",
         "",
         "Defaults reproduce the bug: valueType=bytes, size=262144 (256 KiB), count=1.",
         "",
         "Reproduce (watch the `wrangler dev` console):",
-        "  curl 'http://localhost:8787/start'                              -> SQLITE_TOOBIG",
-        "  curl 'http://localhost:8787/start?valueType=bytes&size=200000'  -> SQLITE_TOOBIG",
-        "Contrast — these COMPLETE fine:",
-        "  curl 'http://localhost:8787/start?valueType=bytes&size=100000'  -> ok (~100 KiB buffer)",
-        "  curl 'http://localhost:8787/start?valueType=string&size=2000000' -> ok (2 MB string!)",
+        "  curl 'http://localhost:8787/start'                                 -> SQLITE_TOOBIG",
+        "  curl 'http://localhost:8787/start?valueType=bytes&size=200000'     -> SQLITE_TOOBIG",
+        "Contrast — these COMPLETE fine (same/again-larger sizes):",
+        "  curl 'http://localhost:8787/start?valueType=arraybuffer&size=950000' -> ok (same bytes, raw buffer!)",
+        "  curl 'http://localhost:8787/start?valueType=string&size=2000000'     -> ok (2 MB string!)",
         "",
         "A ~200 KB Uint8Array step output aborts with `string or blob too big:",
-        "SQLITE_TOOBIG`, yet a 2 MB string is fine. Same workflow runs in prod.",
+        "SQLITE_TOOBIG`, yet the same bytes as an ArrayBuffer (or a 2 MB string)",
+        "are fine. Specific to the Uint8Array view. Same workflow runs in prod.",
       ].join("\n"),
       { headers: { "content-type": "text/plain" } }
     );
