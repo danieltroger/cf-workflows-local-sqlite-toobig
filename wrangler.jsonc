@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "cf-workflows-local-sqlite-toobig",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-02-26",
+  "workflows": [
+    {
+      "name": "step-output-workflow",
+      "binding": "STEP_OUTPUT_WORKFLOW",
+      "class_name": "StepOutputWorkflow"
+    }
+  ]
+}

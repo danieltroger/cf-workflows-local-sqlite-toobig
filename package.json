@@ -1,0 +1,16 @@
+{
+  "name": "cf-workflows-local-sqlite-toobig",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal repro: Cloudflare Workflows abort with 'string or blob too big: SQLITE_TOOBIG' under `wrangler dev` once the cumulative size of persisted step outputs grows large, while the same workflow runs fine in production.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260214.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.93.0"
+  }
+}
